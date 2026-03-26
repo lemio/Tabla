@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tabla – Web Edition</title>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #111; overflow: hidden; font-family: system-ui, -apple-system, sans-serif; }
+    canvas { display: block; }
+
+    /* ── Control Panel ── */
+    #ui {
+      position: fixed; top: 16px; right: 16px;
+      background: rgba(0,0,0,.82); color: #eee;
+      border-radius: 12px; padding: 16px 14px; width: 220px;
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255,255,255,.1);
+      font-size: 13px; z-index: 10;
+      user-select: none;
+    }
+    #ui h1 { font-size: 18px; font-weight: 700; color: #fff; letter-spacing: -.3px; }
+    #ui .sub { font-size: 10px; color: #555; margin-bottom: 14px; }
+    .row { display: flex; justify-content: space-between; margin-bottom: 3px; }
+    .row span { color: #999; }
+    .row b { color: #fff; font-weight: 600; min-width: 32px; text-align: right; }
+    input[type=range] {
+      width: 100%; margin-bottom: 11px; height: 4px;
+      accent-color: #7c7cf0; cursor: pointer;
+    }
+    .btns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+    .btns + .btns { margin-top: 6px; }
+    button {
+      flex: 1; padding: 5px 6px; border-radius: 6px;
+      border: 1px solid rgba(255,255,255,.15);
+      background: rgba(124,124,240,.2); color: #ccc;
+      font-size: 11px; cursor: pointer; transition: background .15s;
+    }
+    button:hover { background: rgba(124,124,240,.4); }
+    button.on { background: rgba(124,124,240,.75); border-color: #7c7cf0; color: #fff; }
+    #fps { font-size: 10px; color: #444; margin-top: 10px; text-align: right; }
+
+    /* ── Welcome Overlay ── */
+    #overlay {
+      position: fixed; inset: 0; background: rgba(10,10,20,.95);
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; gap: 16px; z-index: 20;
+      color: #eee; text-align: center; padding: 24px;
+    }
+    #overlay .icon { font-size: 64px; line-height: 1; }
+    #overlay h2 { font-size: 30px; font-weight: 700; }
+    #overlay p {
+      font-size: 14px; color: #888; max-width: 400px; line-height: 1.6;
+    }
+    #startBtn {
+      margin-top: 4px; padding: 13px 40px; border: none;
+      border-radius: 10px; background: #7c7cf0; color: #fff;
+      font-size: 16px; font-weight: 600; cursor: pointer; letter-spacing: .2px;
+    }
+    #startBtn:hover { background: #9a9af5; }
+    #errMsg { color: #f77; font-size: 12px; max-width: 380px; display: none; }
+    #noCamMsg { color: #fa0; font-size: 12px; max-width: 380px; display: none; }
+
+    /* ── Help tooltip ── */
+    #hint {
+      position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,.6); color: #999; font-size: 11px;
+      padding: 6px 14px; border-radius: 20px; pointer-events: none;
+      opacity: 0; transition: opacity 1s;
+      white-space: nowrap;
+    }
+    #hint.show { opacity: 1; }
+  </style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+
+<!-- ── Control Panel ── -->
+<div id="ui">
+  <h1>🥁 Tabla</h1>
+  <div class="sub">Web Edition &nbsp;·&nbsp; HTML5 Webcam</div>
+
+  <div class="row"><span>Max Balls</span><b id="vBalls">50</b></div>
+  <input type="range" id="sBalls" min="5" max="150" value="50">
+
+  <div class="row"><span>Gravity</span><b id="vGrav">0.30</b></div>
+  <input type="range" id="sGrav" min="0" max="30" value="9">
+
+  <div class="row"><span>Threshold</span><b id="vThr">80</b></div>
+  <input type="range" id="sThr" min="5" max="250" value="80">
+
+  <div class="row"><span>Ball Size</span><b id="vSize">10</b></div>
+  <input type="range" id="sSize" min="3" max="35" value="10">
+
+  <div class="btns">
+    <button id="bMirror" class="on" title="Flip webcam horizontally">Mirror</button>
+    <button id="bInvert"         title="Treat bright areas as obstacles">Invert</button>
+    <button id="bVision"         title="Show obstacle mask">Vision</button>
+    <button id="bSound"          title="Enable collision sounds">Sound</button>
+  </div>
+  <div class="btns">
+    <button id="bClear"   title="Remove all balls">Clear</button>
+    <button id="bCalib"   title="Capture background frame for foreground detection">Calibrate</button>
+    <button id="bShake"   title="Give all balls a random kick">Shake!</button>
+  </div>
+  <div id="fps">FPS: – &nbsp;|&nbsp; Balls: 0</div>
+</div>
+
+<!-- ── Welcome Overlay ── -->
+<div id="overlay">
+  <div class="icon">🥁</div>
+  <h2>Tabla — Web Edition</h2>
+  <p>
+    An interactive physics playground powered by your webcam.<br>
+    Place objects (or your hands!) in front of the camera and
+    watch the balls bounce off them in real time.
+  </p>
+  <button id="startBtn">Start Camera</button>
+  <div id="noCamMsg">⚠️ No camera API found. Please use a modern browser (Chrome / Firefox / Safari) over HTTPS.</div>
+  <div id="errMsg"></div>
+</div>
+
+<div id="hint">Click anywhere to spawn a ball</div>
+
+<script>
+'use strict';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Utilities
+// ─────────────────────────────────────────────────────────────────────────────
+function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+function rand(a, b) { return a + (b - a) * Math.random(); }
+
+const PALETTE = [
+  '#FF6B6B','#FF9F43','#FECA57','#48DBFB','#54A0FF',
+  '#5F27CD','#FF9FF3','#1DD1A1','#C8D6E5','#EE5A24',
+  '#A29BFE','#FD79A8','#55EFC4','#FDCB6E','#74B9FF'
+];
+
+// ── Physics / vision constants ────────────────────────────────────────────────
+const GLOBAL_AUDIO_THROTTLE_MS   = 40;   // minimum ms between any two beeps
+const PER_BALL_AUDIO_THROTTLE_MS = 200;  // minimum ms between beeps from one ball
+const BG_SUBTRACTION_THRESHOLD   = 28;   // pixel diff to count as foreground
+const SOBEL_KERNEL_OFFSET        = 4;    // pixel offset for Sobel gradient sampling
+const COLLISION_RADIUS_FACTOR    = 0.85; // fraction of ball radius used for probe points
+const COLLISION_TEST_ANGLE       = Math.PI / 3; // 60° between hemisphere probe points
+const OBSTACLE_BOUNCE_DAMPING    = 0.72; // velocity retained after obstacle collision
+const OBSTACLE_PUSHOUT_PX        = 5;    // canvas pixels to push ball out of obstacle
+const WALL_BOUNCE_DAMPING        = 0.75; // velocity retained after canvas-boundary bounce
+const BALL_COLLISION_RESTITUTION = 0.82; // velocity transfer fraction in ball–ball collisions
+const OFFSCREEN_BUFFER_PX        = 60;   // pixels below canvas before a ball is removed
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Audio Engine  (Web Audio API – percussion tones on collision)
+// ─────────────────────────────────────────────────────────────────────────────
+class AudioEngine {
+  constructor() {
+    this.actx = null;
+    this.enabled = false;
+    this._lastTime = 0;       // global debounce (ms)
+    this._perBall = new Map(); // per-ball debounce
+  }
+
+  _init() {
+    if (!this.actx) {
+      this.actx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+  }
+
+  // freq in Hz, vol 0-1, dur seconds
+  beep(ballId, freq, vol = 0.18, dur = 0.28) {
+    if (!this.enabled) return;
+    const now = Date.now();
+    if (now - this._lastTime < GLOBAL_AUDIO_THROTTLE_MS) return;
+    if (now - (this._perBall.get(ballId) || 0) < PER_BALL_AUDIO_THROTTLE_MS) return;
+    this._lastTime = now;
+    this._perBall.set(ballId, now);
+
+    this._init();
+    const ac = this.actx;
+    const osc = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.connect(gain);
+    gain.connect(ac.destination);
+
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    const t = ac.currentTime;
+    gain.gain.setValueAtTime(vol * 0.5, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    osc.start(t);
+    osc.stop(t + dur);
+  }
+
+  // Map y position (canvas coords) to a pentatonic scale frequency
+  yToFreq(y, H) {
+    // Pentatonic scale C3-C6
+    const NOTES = [130.81, 164.81, 196.00, 246.94, 293.66,
+                   329.63, 392.00, 493.88, 523.25, 659.25, 784.00];
+    const t = clamp(1 - y / H, 0, 1);
+    const idx = Math.round(t * (NOTES.length - 1));
+    return NOTES[idx];
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Vision Processor  (pixel-level obstacle detection)
+// ─────────────────────────────────────────────────────────────────────────────
+class VisionProcessor {
+  constructor() {
+    this.threshold = 80;   // gray value cut-off
+    this.invert    = false; // if true, bright pixels are obstacles
+    this._bgPx  = null;    // Uint8ClampedArray of background frame
+    this._bgW   = 0;
+    this._bgH   = 0;
+  }
+
+  calibrate(imgData) {
+    this._bgPx = new Uint8ClampedArray(imgData.data);
+    this._bgW  = imgData.width;
+    this._bgH  = imgData.height;
+  }
+
+  clearCalib() {
+    this._bgPx = null;
+  }
+
+  hasCalib() { return this._bgPx !== null; }
+
+  // Fast integer grayscale  (BT.601 approximation, no division)
+  _gray(data, w, x, y) {
+    const i = (y * w + x) * 4;
+    return (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8;
+  }
+
+  // Returns true if the image pixel at (px, py) is an obstacle.
+  // px, py are IMAGE-space coordinates (not canvas-space).
+  isObstacle(data, iw, ih, px, py) {
+    const x = px | 0, y = py | 0;
+    if (x < 0 || x >= iw || y < 0 || y >= ih) return true; // boundary = wall
+
+    const gray = this._gray(data, iw, x, y);
+
+    if (this._bgPx && this._bgW === iw) {
+      // Background-subtraction mode: foreground = obstacle
+      const bgGray = this._gray(this._bgPx, iw, x, y);
+      return Math.abs(gray - bgGray) > BG_SUBTRACTION_THRESHOLD;
+    }
+
+    // Simple threshold mode
+    return this.invert ? (gray > this.threshold) : (gray < this.threshold);
+  }
+
+  // Estimate the surface normal at image pixel (px, py) using a Sobel kernel.
+  // Returns a unit vector { x, y } pointing AWAY from the obstacle surface.
+  surfaceNormal(data, iw, ih, px, py) {
+    const x = clamp(px | 0, 1, iw - 2);
+    const y = clamp(py | 0, 1, ih - 2);
+    const e = SOBEL_KERNEL_OFFSET;
+
+    const g = (dx, dy) => this._gray(data, iw,
+      clamp(x + dx, 0, iw - 1),
+      clamp(y + dy, 0, ih - 1));
+
+    const gx = -g(-e,-e) - 2*g(-e,0) - g(-e,e) + g(e,-e) + 2*g(e,0) + g(e,e);
+    const gy = -g(-e,-e) - 2*g(0,-e) - g(e,-e) + g(-e,e) + 2*g(0,e) + g(e,e);
+
+    // Flip direction: the gradient points toward brighter pixels.
+    // In default (dark = obstacle) mode we want to point away from dark area → flip.
+    let nx = this.invert ?  gx : -gx;
+    let ny = this.invert ?  gy : -gy;
+
+    const len = Math.sqrt(nx * nx + ny * ny);
+    if (len < 1) return { x: 0, y: -1 }; // default: push upward
+    return { x: nx / len, y: ny / len };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ball
+// ─────────────────────────────────────────────────────────────────────────────
+let _ballIdCounter = 0;
+
+class Ball {
+  constructor(x, y, r, color) {
+    this.id    = _ballIdCounter++;
+    this.x     = x;
+    this.y     = y;
+    this.vx    = rand(-2.5, 2.5);
+    this.vy    = rand(-4, -1);
+    this.r     = r;
+    this.color = color;
+    this.dead  = false;
+    this._squash = 1;
+    this._ang    = 0;
+  }
+
+  update(gravity, vis, imgData, sx, sy, W, H, audio) {
+    this.vy += gravity;
+
+    // Speed cap
+    const spd = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+    const maxSpd = 22;
+    if (spd > maxSpd) { this.vx = this.vx / spd * maxSpd; this.vy = this.vy / spd * maxSpd; }
+
+    this._ang = Math.atan2(this.vy, this.vx);
+    this._squash = clamp(spd / 14, 0, 0.55);
+
+    const nx = this.x + this.vx;
+    const ny = this.y + this.vy;
+    const { data, width: iw, height: ih } = imgData;
+
+    // Test 5 points on the ball's leading hemisphere
+    const cr  = this.r * COLLISION_RADIUS_FACTOR;
+    const ang = this._ang;
+    const pts = [
+      [nx,                                          ny                                         ],
+      [nx + Math.cos(ang)                    * cr,  ny + Math.sin(ang)                    * cr],
+      [nx + Math.cos(ang + COLLISION_TEST_ANGLE) * cr, ny + Math.sin(ang + COLLISION_TEST_ANGLE) * cr],
+      [nx + Math.cos(ang - COLLISION_TEST_ANGLE) * cr, ny + Math.sin(ang - COLLISION_TEST_ANGLE) * cr],
+      [nx + Math.cos(ang + Math.PI)          * cr,  ny + Math.sin(ang + Math.PI)          * cr],
+    ];
+
+    let hit = false;
+    for (const [px, py] of pts) {
+      if (vis.isObstacle(data, iw, ih, px * sx, py * sy)) { hit = true; break; }
+    }
+
+    if (hit) {
+      const n   = vis.surfaceNormal(data, iw, ih, this.x * sx, this.y * sy);
+      const dot = this.vx * n.x + this.vy * n.y;
+      if (dot < 0) {
+        this.vx = (this.vx - 2 * dot * n.x) * OBSTACLE_BOUNCE_DAMPING;
+        this.vy = (this.vy - 2 * dot * n.y) * OBSTACLE_BOUNCE_DAMPING;
+        audio.beep(this.id, audio.yToFreq(this.y, H));
+      }
+      // Push out of obstacle
+      this.x += n.x * OBSTACLE_PUSHOUT_PX / sx;
+      this.y += n.y * OBSTACLE_PUSHOUT_PX / sy;
+    } else {
+      this.x = nx;
+      this.y = ny;
+    }
+
+    // Canvas boundary collisions
+    if (this.x - this.r < 0)   { this.x = this.r;     this.vx =  Math.abs(this.vx) * WALL_BOUNCE_DAMPING; }
+    if (this.x + this.r > W)   { this.x = W - this.r; this.vx = -Math.abs(this.vx) * WALL_BOUNCE_DAMPING; }
+    if (this.y - this.r < 0)   { this.y = this.r;     this.vy =  Math.abs(this.vy) * WALL_BOUNCE_DAMPING; }
+    if (this.y - this.r > H + OFFSCREEN_BUFFER_PX) { this.dead = true; }
+  }
+
+  draw(ctx) {
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.rotate(this._ang);
+    ctx.scale(1 + this._squash * 0.28, 1 - this._squash * 0.18);
+
+    // Shadow
+    ctx.shadowColor = 'rgba(0,0,0,.45)';
+    ctx.shadowBlur  = 8;
+    ctx.shadowOffsetY = 3;
+
+    // Body
+    ctx.beginPath();
+    ctx.arc(0, 0, this.r, 0, Math.PI * 2);
+    ctx.fillStyle = this.color;
+    ctx.fill();
+
+    ctx.shadowColor = 'transparent';
+
+    // Specular highlight
+    const grad = ctx.createRadialGradient(
+      -this.r * 0.32, -this.r * 0.38, 0,
+       0, 0, this.r
+    );
+    grad.addColorStop(0,   'rgba(255,255,255,.55)');
+    grad.addColorStop(0.55,'rgba(255,255,255,0)');
+    grad.addColorStop(1,   'rgba(0,0,0,.08)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(0, 0, this.r, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Simple O(n²) ball–ball collision resolution
+// ─────────────────────────────────────────────────────────────────────────────
+function resolveBallCollisions(balls) {
+  const n = balls.length;
+  for (let i = 0; i < n - 1; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const a = balls[i], b = balls[j];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const minD = a.r + b.r;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < minD * minD && d2 > 0.001) {
+        const d   = Math.sqrt(d2);
+        const nx  = dx / d, ny = dy / d;
+        const ov  = (minD - d) * 0.5;
+        a.x -= nx * ov; a.y -= ny * ov;
+        b.x += nx * ov; b.y += ny * ov;
+        const dvx = b.vx - a.vx, dvy = b.vy - a.vy;
+        const dot = dvx * nx + dvy * ny;
+        if (dot < 0) {
+          const impulse = dot * BALL_COLLISION_RESTITUTION;
+          a.vx += impulse * nx; a.vy += impulse * ny;
+          b.vx -= impulse * nx; b.vy -= impulse * ny;
+        }
+      }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main Application
+// ─────────────────────────────────────────────────────────────────────────────
+class TablaApp {
+  constructor() {
+    this.canvas  = document.getElementById('c');
+    this.ctx     = this.canvas.getContext('2d');
+
+    // Video element (hidden)
+    this.video   = document.createElement('video');
+    this.video.autoplay    = true;
+    this.video.playsInline = true;
+    this.video.muted       = true;
+
+    // Offscreen canvas – mirrored video at native resolution
+    this.off    = document.createElement('canvas');
+    this.offCtx = this.off.getContext('2d', { willReadFrequently: true });
+
+    // Separate canvas for the vision overlay
+    this.thrCv  = document.createElement('canvas');
+    this.thrCtx = this.thrCv.getContext('2d');
+
+    this.vis   = new VisionProcessor();
+    this.audio = new AudioEngine();
+    this.balls = [];
+
+    // Config
+    this.maxBalls  = 50;
+    this.gravity   = 0.30;
+    this.ballSize  = 10;
+    this.mirror    = true;
+    this.showVis   = false;
+
+    this._spawnTimer  = 0;
+    this._spawnEvery  = 6; // frames
+    this._lastImgData = null;
+
+    // FPS tracking
+    this._fps       = 0;
+    this._frameAcc  = 0;
+    this._fpsTimer  = performance.now();
+
+    this._bindUI();
+    this._resize();
+    window.addEventListener('resize', () => this._resize());
+
+    // Click / touch to spawn
+    this.canvas.addEventListener('click',      e => this._spawnAt(e.clientX, e.clientY));
+    this.canvas.addEventListener('touchstart', e => {
+      e.preventDefault();
+      for (const t of e.changedTouches) this._spawnAt(t.clientX, t.clientY);
+    }, { passive: false });
+
+    // Show "click to spawn" hint briefly
+    const hint = document.getElementById('hint');
+    setTimeout(() => hint.classList.add('show'),  2000);
+    setTimeout(() => hint.classList.remove('show'), 6000);
+  }
+
+  // ── UI ──────────────────────────────────────────────────────────────────────
+  _bindUI() {
+    // Check for camera API support
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      document.getElementById('noCamMsg').style.display = 'block';
+      document.getElementById('startBtn').disabled = true;
+    }
+
+    // Sliders – optional `fmt` function transforms the raw slider value for display
+    const slider = (id, valId, fn, fmt = null) => {
+      document.getElementById(id).addEventListener('input', e => {
+        fn(+e.target.value);
+        document.getElementById(valId).textContent = fmt
+          ? fmt(+e.target.value)
+          : e.target.value;
+      });
+    };
+
+    slider('sBalls', 'vBalls', v => { this.maxBalls = v; });
+    slider('sGrav',  'vGrav',  v => { this.gravity = v / 30; }, v => (v / 30).toFixed(2));
+    slider('sThr',   'vThr',   v => { this.vis.threshold = v; });
+    slider('sSize',  'vSize',  v => { this.ballSize = v; });
+
+    // Toggle buttons
+    const tog = (id, getter, setter) => {
+      const btn = document.getElementById(id);
+      btn.addEventListener('click', () => {
+        setter(!getter());
+        btn.classList.toggle('on', getter());
+      });
+    };
+
+    tog('bMirror',  () => this.mirror,          v => { this.mirror = v; });
+    tog('bInvert',  () => this.vis.invert,       v => { this.vis.invert = v; });
+    tog('bVision',  () => this.showVis,          v => { this.showVis = v; });
+    tog('bSound',   () => this.audio.enabled,    v => {
+      this.audio.enabled = v;
+      if (v) this.audio._init(); // resume AudioContext on user gesture
+    });
+
+    // Action buttons
+    document.getElementById('bClear').addEventListener('click', () => { this.balls = []; });
+
+    document.getElementById('bCalib').addEventListener('click', () => {
+      const btn = document.getElementById('bCalib');
+      if (this.vis.hasCalib()) {
+        this.vis.clearCalib();
+        btn.textContent = 'Calibrate';
+        btn.classList.remove('on');
+      } else if (this._lastImgData) {
+        this.vis.calibrate(this._lastImgData);
+        btn.textContent = '✓ BG Set';
+        btn.classList.add('on');
+      }
+    });
+
+    document.getElementById('bShake').addEventListener('click', () => {
+      for (const b of this.balls) {
+        b.vx += rand(-12, 12);
+        b.vy += rand(-14, -4);
+      }
+    });
+
+    // Start button
+    document.getElementById('startBtn').addEventListener('click', () => this._startCamera());
+  }
+
+  // ── Camera ──────────────────────────────────────────────────────────────────
+  async _startCamera() {
+    const errEl  = document.getElementById('errMsg');
+    errEl.style.display = 'none';
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+        audio: false
+      });
+      this.video.srcObject = stream;
+      await new Promise((resolve, reject) => {
+        this.video.addEventListener('loadedmetadata', resolve);
+        this.video.addEventListener('error', reject);
+      });
+      document.getElementById('overlay').style.display = 'none';
+      this._loop();
+    } catch (e) {
+      errEl.style.display = 'block';
+      errEl.textContent = `Camera error: ${e.message}`;
+    }
+  }
+
+  // ── Helpers ──────────────────────────────────────────────────────────────────
+  _resize() {
+    this.canvas.width  = window.innerWidth;
+    this.canvas.height = window.innerHeight;
+  }
+
+  _spawnAt(cx, cy) {
+    const r = this.ballSize * rand(0.65, 1.2);
+    const color = PALETTE[Math.floor(Math.random() * PALETTE.length)];
+    const b = new Ball(cx, cy, r, color);
+    b.vx = rand(-6, 6);
+    b.vy = rand(-10, -5);
+    this.balls.push(b);
+  }
+
+  _spawnFromTop() {
+    if (this.balls.length >= this.maxBalls) return;
+    const W = this.canvas.width;
+    const r = this.ballSize * rand(0.6, 1.3);
+    const color = PALETTE[Math.floor(Math.random() * PALETTE.length)];
+    this.balls.push(new Ball(rand(r, W - r), -r, r, color));
+  }
+
+  // ── Capture webcam frame into offscreen canvas (with optional mirror) ───────
+  _captureFrame() {
+    const vw = this.video.videoWidth, vh = this.video.videoHeight;
+    if (!vw || !vh) return null;
+    if (this.off.width !== vw || this.off.height !== vh) {
+      this.off.width = vw; this.off.height = vh;
+    }
+    const oc = this.offCtx;
+    if (this.mirror) {
+      oc.save();
+      oc.translate(vw, 0);
+      oc.scale(-1, 1);
+      oc.drawImage(this.video, 0, 0);
+      oc.restore();
+    } else {
+      oc.drawImage(this.video, 0, 0);
+    }
+    return oc.getImageData(0, 0, vw, vh);
+  }
+
+  // ── Draw vision overlay (thresholded mask) ──────────────────────────────────
+  _drawVisionOverlay(imgData, W, H) {
+    const { data, width, height } = imgData;
+    if (this.thrCv.width !== width || this.thrCv.height !== height) {
+      this.thrCv.width = width; this.thrCv.height = height;
+    }
+    const out = this.thrCtx.createImageData(width, height);
+    const od  = out.data;
+    const vis = this.vis;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) << 2;
+        const blocked = vis.isObstacle(data, width, height, x, y);
+        od[i]   = blocked ? 60  : 15;
+        od[i+1] = blocked ? 240 : 25;
+        od[i+2] = blocked ? 60  : 15;
+        od[i+3] = 255;
+      }
+    }
+    this.thrCtx.putImageData(out, 0, 0);
+    this.ctx.drawImage(this.thrCv, 0, 0, W, H);
+  }
+
+  // ── Main Loop ────────────────────────────────────────────────────────────────
+  _loop() {
+    requestAnimationFrame(() => this._loop());
+
+    const W = this.canvas.width, H = this.canvas.height;
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, W, H);
+
+    // FPS
+    this._frameAcc++;
+    const nowMs = performance.now();
+    if (nowMs - this._fpsTimer >= 500) {
+      this._fps = Math.round(this._frameAcc * 1000 / (nowMs - this._fpsTimer));
+      document.getElementById('fps').textContent =
+        `FPS: ${this._fps} &nbsp;|&nbsp; Balls: ${this.balls.length}`;
+      this._frameAcc = 0;
+      this._fpsTimer = nowMs;
+    }
+
+    const imgData = this._captureFrame();
+    this._lastImgData = imgData;
+
+    if (!imgData) {
+      ctx.fillStyle = '#111';
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#444';
+      ctx.font = '18px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText('Waiting for camera…', W / 2, H / 2);
+      return;
+    }
+
+    const iw = imgData.width, ih = imgData.height;
+    const sx = iw / W, sy = ih / H; // canvas → image scale
+
+    // ── Background (webcam or vision mask) ──
+    if (this.showVis) {
+      this._drawVisionOverlay(imgData, W, H);
+    } else {
+      ctx.drawImage(this.off, 0, 0, W, H);
+    }
+
+    // Semi-transparent overlay for contrast
+    ctx.fillStyle = 'rgba(0,0,0,.30)';
+    ctx.fillRect(0, 0, W, H);
+
+    // ── Spawn ──
+    this._spawnTimer++;
+    if (this._spawnTimer % this._spawnEvery === 0) {
+      this._spawnFromTop();
+    }
+
+    // ── Physics ──
+    this.balls = this.balls.filter(b => !b.dead);
+    for (const b of this.balls) {
+      b.update(this.gravity, this.vis, imgData, sx, sy, W, H, this.audio);
+    }
+    resolveBallCollisions(this.balls);
+
+    // ── Render Balls ──
+    for (const b of this.balls) b.draw(ctx);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Boot
+// ─────────────────────────────────────────────────────────────────────────────
+new TablaApp();
+</script>
+</body>
+</html>
