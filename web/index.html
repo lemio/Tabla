@@ -70,6 +70,51 @@
       white-space: nowrap;
     }
     #hint.show { opacity: 1; }
+
+    /* ── Warp-active badge ── */
+    #warpBadge {
+      display: none; margin-top: 6px; padding: 4px 8px;
+      background: rgba(76,175,80,.25); border: 1px solid rgba(76,175,80,.6);
+      border-radius: 5px; color: #81c784; font-size: 11px; text-align: center;
+      cursor: pointer;
+    }
+    #warpBadge:hover { background: rgba(76,175,80,.4); }
+
+    /* ── Calibration Overlay ── */
+    #calOverlay {
+      position: fixed; inset: 0; background: #000;
+      display: none; z-index: 18;
+    }
+    #calCanvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+    .calHandle {
+      position: absolute; width: 32px; height: 32px; border-radius: 50%;
+      background: rgba(255,210,0,.92); border: 3px solid #fff;
+      transform: translate(-50%, -50%);
+      cursor: grab; z-index: 19;
+      box-shadow: 0 0 0 2px rgba(0,0,0,.4), 0 2px 10px rgba(0,0,0,.6);
+      font-size: 9px; font-weight: 800; color: #333;
+      display: flex; align-items: center; justify-content: center;
+      user-select: none; transition: background .1s;
+    }
+    .calHandle:active, .calHandle.dragging { cursor: grabbing; background: rgba(255,120,30,.95); }
+    #calHud {
+      position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,.82); color: #eee; padding: 16px 22px;
+      border-radius: 12px; text-align: center; z-index: 20;
+      backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,.12);
+      max-width: 540px; width: calc(100% - 48px);
+    }
+    #calHud p { font-size: 13px; color: #aaa; margin-bottom: 12px; line-height: 1.5; }
+    #calHud strong { color: #ffd600; }
+    #calHud .calBtns { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+    #calHud .calBtns button {
+      padding: 9px 20px; border-radius: 8px; border: none;
+      font-size: 13px; cursor: pointer; font-weight: 600;
+    }
+    #calApply  { background: #4caf50; color: #fff; }
+    #calApply:hover { background: #66bb6a; }
+    #calReset  { background: rgba(255,255,255,.12); color: #ccc; border: 1px solid rgba(255,255,255,.2) !important; }
+    #calCancel { background: rgba(255,255,255,.08); color: #888; border: 1px solid rgba(255,255,255,.12) !important; }
   </style>
 </head>
 <body>
@@ -87,8 +132,8 @@
   <div class="row"><span>Gravity</span><b id="vGrav">0.30</b></div>
   <input type="range" id="sGrav" min="0" max="30" value="9">
 
-  <div class="row"><span>Threshold</span><b id="vThr">80</b></div>
-  <input type="range" id="sThr" min="5" max="250" value="80">
+  <div class="row"><span>Threshold</span><b id="vThr">128</b></div>
+  <input type="range" id="sThr" min="5" max="250" value="128">
 
   <div class="row"><span>Ball Size</span><b id="vSize">10</b></div>
   <input type="range" id="sSize" min="3" max="35" value="10">
@@ -104,6 +149,11 @@
     <button id="bCalib"   title="Capture background frame for foreground detection">Calibrate</button>
     <button id="bShake"   title="Give all balls a random kick">Shake!</button>
   </div>
+  <div class="btns">
+    <button id="bDebug"   title="Show collision probe points and vision stats">Debug</button>
+    <button id="bWarpCal" title="Calibrate camera perspective to display area">Warp Cal</button>
+  </div>
+  <div id="warpBadge" title="Perspective warp active – click to recalibrate">⬡ Warp active</div>
   <div id="fps">FPS: – &nbsp;|&nbsp; Balls: 0</div>
 </div>
 
@@ -122,6 +172,27 @@
 </div>
 
 <div id="hint">Click anywhere to spawn a ball</div>
+
+<!-- ── Perspective Calibration Overlay ── -->
+<div id="calOverlay">
+  <canvas id="calCanvas"></canvas>
+  <div class="calHandle" id="ch0" title="Top-left corner">TL</div>
+  <div class="calHandle" id="ch1" title="Top-right corner">TR</div>
+  <div class="calHandle" id="ch2" title="Bottom-right corner">BR</div>
+  <div class="calHandle" id="ch3" title="Bottom-left corner">BL</div>
+  <div id="calHud">
+    <p>
+      Drag the <strong>yellow handles</strong> to mark the four corners of
+      the area the camera should track.<br>
+      Those corners will map exactly to the edges of the display.
+    </p>
+    <div class="calBtns">
+      <button id="calApply">✓ Apply Calibration</button>
+      <button id="calReset">↺ Reset Corners</button>
+      <button id="calCancel">✕ Cancel</button>
+    </div>
+  </div>
+</div>
 
 <script>
 'use strict';
@@ -168,8 +239,8 @@ class AudioEngine {
     }
   }
 
-  // freq in Hz, vol 0-1, dur seconds
-  beep(ballId, freq, vol = 0.18, dur = 0.28) {
+  // freq in Hz, volume 0-1, duration in seconds
+  beep(ballId, freq, volume = 0.18, duration = 0.28) {
     if (!this.enabled) return;
     const now = Date.now();
     if (now - this._lastTime < GLOBAL_AUDIO_THROTTLE_MS) return;
@@ -187,10 +258,10 @@ class AudioEngine {
     osc.type = 'sine';
     osc.frequency.value = freq;
     const t = ac.currentTime;
-    gain.gain.setValueAtTime(vol * 0.5, t);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    gain.gain.setValueAtTime(volume * 0.5, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + duration);
     osc.start(t);
-    osc.stop(t + dur);
+    osc.stop(t + duration);
   }
 
   // Map y position (canvas coords) to a pentatonic scale frequency
@@ -209,7 +280,7 @@ class AudioEngine {
 // ─────────────────────────────────────────────────────────────────────────────
 class VisionProcessor {
   constructor() {
-    this.threshold = 80;   // gray value cut-off
+    this.threshold = 128;  // gray value cut-off (mid-range default)
     this.invert    = false; // if true, bright pixels are obstacles
     this._bgPx  = null;    // Uint8ClampedArray of background frame
     this._bgW   = 0;
@@ -278,6 +349,76 @@ class VisionProcessor {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PerspectiveWarper
+// Computes a homography (8 DOF) mapping canvas space → camera image space.
+// This lets the user define exactly which region of the camera view corresponds
+// to the display area, enabling perspective-correct obstacle detection.
+// ─────────────────────────────────────────────────────────────────────────────
+class PerspectiveWarper {
+  constructor() {
+    this.active      = false;
+    this._h          = null;   // 8-element homography vector [h0..h7], h8=1
+    this.screenCorners = null; // last-applied handle positions in screen coords
+  }
+
+  // calibrate() expects handlePts in viewport (screen) pixels.
+  // canvasW/H must equal window.innerWidth/Height (guaranteed by _resize()),
+  // so p.x / canvasW is the normalised [0..1] position across the display.
+  calibrate(handlePts, canvasW, canvasH, imgW, imgH) {
+    this.screenCorners = handlePts.map(p => ({ ...p }));
+    // Source: the 4 corners of the canvas in canvas-space
+    const src = [[0, 0], [canvasW, 0], [canvasW, canvasH], [0, canvasH]];
+    // Destination: those corners' equivalent positions in image-space
+    const dst = handlePts.map(p => [p.x * imgW / canvasW, p.y * imgH / canvasH]);
+    this._h = this._computeH(src, dst);
+    this.active = true;
+  }
+
+  reset() { this.active = false; this._h = null; this.screenCorners = null; }
+
+  // Map canvas point (cx, cy) → image point {x, y}
+  transform(cx, cy) {
+    const h = this._h;
+    const d = h[6] * cx + h[7] * cy + 1;
+    return {
+      x: (h[0] * cx + h[1] * cy + h[2]) / d,
+      y: (h[3] * cx + h[4] * cy + h[5]) / d
+    };
+  }
+
+  _computeH(src, dst) {
+    // Build 8×8 linear system from 4 point correspondences
+    const A = [], b = [];
+    for (let i = 0; i < 4; i++) {
+      const [x, y] = src[i], [u, v] = dst[i];
+      A.push([x, y, 1, 0, 0, 0, -x * u, -y * u]); b.push(u);
+      A.push([0, 0, 0, x, y, 1, -x * v, -y * v]); b.push(v);
+    }
+    return this._gauss(A, b);
+  }
+
+  _gauss(A, b) {
+    const n = 8;
+    const M = A.map((r, i) => [...r, b[i]]);
+    for (let c = 0; c < n; c++) {
+      let piv = c;
+      for (let r = c + 1; r < n; r++) {
+        if (Math.abs(M[r][c]) > Math.abs(M[piv][c])) piv = r;
+      }
+      [M[c], M[piv]] = [M[piv], M[c]];
+      const p = M[c][c];
+      if (Math.abs(p) < 1e-12) continue;
+      for (let r = 0; r < n; r++) {
+        if (r === c) continue;
+        const f = M[r][c] / p;
+        for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k];
+      }
+    }
+    return M.map((row, i) => Math.abs(row[i]) > 1e-12 ? row[8] / row[i] : 0);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Ball
 // ─────────────────────────────────────────────────────────────────────────────
 let _ballIdCounter = 0;
@@ -292,11 +433,15 @@ class Ball {
     this.r     = r;
     this.color = color;
     this.dead  = false;
-    this._squash = 1;
-    this._ang    = 0;
+    this._squash   = 1;
+    this._ang      = 0;
+    this._isHitting = false; // true when touching an obstacle this frame
+    this._debugPts  = [];    // probe point results for debug overlay
   }
 
-  update(gravity, vis, imgData, sx, sy, W, H, audio) {
+  // imgCoordFn(cx, cy) → {x, y} maps canvas coords to image-pixel coords.
+  // sx/sy are the simple linear scale factors (used for pushout approximation).
+  update(gravity, vis, imgData, imgCoordFn, sx, sy, W, H, audio, debugMode = false) {
     this.vy += gravity;
 
     // Speed cap
@@ -315,27 +460,37 @@ class Ball {
     const cr  = this.r * COLLISION_RADIUS_FACTOR;
     const ang = this._ang;
     const pts = [
-      [nx,                                          ny                                         ],
-      [nx + Math.cos(ang)                    * cr,  ny + Math.sin(ang)                    * cr],
-      [nx + Math.cos(ang + COLLISION_TEST_ANGLE) * cr, ny + Math.sin(ang + COLLISION_TEST_ANGLE) * cr],
-      [nx + Math.cos(ang - COLLISION_TEST_ANGLE) * cr, ny + Math.sin(ang - COLLISION_TEST_ANGLE) * cr],
-      [nx + Math.cos(ang + Math.PI)          * cr,  ny + Math.sin(ang + Math.PI)          * cr],
+      [nx,                                              ny                                             ],
+      [nx + Math.cos(ang)                    * cr,      ny + Math.sin(ang)                    * cr    ],
+      [nx + Math.cos(ang + COLLISION_TEST_ANGLE) * cr,  ny + Math.sin(ang + COLLISION_TEST_ANGLE) * cr],
+      [nx + Math.cos(ang - COLLISION_TEST_ANGLE) * cr,  ny + Math.sin(ang - COLLISION_TEST_ANGLE) * cr],
+      [nx + Math.cos(ang + Math.PI)          * cr,      ny + Math.sin(ang + Math.PI)          * cr    ],
     ];
 
+    // Collect probe results; in debug mode always test all 5 points for visualization
+    if (debugMode) this._debugPts = [];
     let hit = false;
     for (const [px, py] of pts) {
-      if (vis.isObstacle(data, iw, ih, px * sx, py * sy)) { hit = true; break; }
+      const ic      = imgCoordFn(px, py);
+      const blocked = vis.isObstacle(data, iw, ih, ic.x, ic.y);
+      if (debugMode) this._debugPts.push({ x: px, y: py, hit: blocked });
+      if (blocked) {
+        hit = true;
+        if (!debugMode) break; // early exit when not collecting all points
+      }
     }
+    this._isHitting = hit;
 
     if (hit) {
-      const n   = vis.surfaceNormal(data, iw, ih, this.x * sx, this.y * sy);
+      const ic0 = imgCoordFn(this.x, this.y);
+      const n   = vis.surfaceNormal(data, iw, ih, ic0.x, ic0.y);
       const dot = this.vx * n.x + this.vy * n.y;
       if (dot < 0) {
         this.vx = (this.vx - 2 * dot * n.x) * OBSTACLE_BOUNCE_DAMPING;
         this.vy = (this.vy - 2 * dot * n.y) * OBSTACLE_BOUNCE_DAMPING;
         audio.beep(this.id, audio.yToFreq(this.y, H));
       }
-      // Push out of obstacle
+      // Push out of obstacle (linear sx/sy used as pushout approximation)
       this.x += n.x * OBSTACLE_PUSHOUT_PX / sx;
       this.y += n.y * OBSTACLE_PUSHOUT_PX / sy;
     } else {
@@ -350,7 +505,8 @@ class Ball {
     if (this.y - this.r > H + OFFSCREEN_BUFFER_PX) { this.dead = true; }
   }
 
-  draw(ctx) {
+  // debugPts: array of {x,y,hit} probe point results, or null for normal draw
+  draw(ctx, debugPts = null) {
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.rotate(this._ang);
@@ -383,6 +539,16 @@ class Ball {
     ctx.fill();
 
     ctx.restore();
+
+    // Draw debug probe points in canvas (not ball-local) coordinates
+    if (debugPts && debugPts.length > 0) {
+      for (const p of debugPts) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+        ctx.fillStyle = p.hit ? 'rgba(255,50,50,.9)' : 'rgba(50,255,100,.75)';
+        ctx.fill();
+      }
+    }
   }
 }
 
@@ -441,16 +607,29 @@ class TablaApp {
     this.audio = new AudioEngine();
     this.balls = [];
 
+    // Perspective warp calibration
+    this.warper = new PerspectiveWarper();
+
     // Config
     this.maxBalls  = 50;
     this.gravity   = 0.30;
     this.ballSize  = 10;
     this.mirror    = true;
     this.showVis   = false;
+    this.debugMode = false;
 
     this._spawnTimer  = 0;
     this._spawnEvery  = 6; // frames
     this._lastImgData = null;
+
+    // Debug stats
+    this._hitCount   = 0;  // balls hitting an obstacle this frame
+    this._obsPercent = 0;  // sampled obstacle coverage %
+    this._obsTimer   = 0;  // countdown to next obstacle sample
+
+    // Calibration overlay state
+    this._calPts    = null; // 4 {x,y} handle positions in screen space
+    this._calAnimId = null; // rAF id for calibration loop
 
     // FPS tracking
     this._fps       = 0;
@@ -513,6 +692,7 @@ class TablaApp {
       this.audio.enabled = v;
       if (v) this.audio._init(); // resume AudioContext on user gesture
     });
+    tog('bDebug',   () => this.debugMode,        v => { this.debugMode = v; });
 
     // Action buttons
     document.getElementById('bClear').addEventListener('click', () => { this.balls = []; });
@@ -536,6 +716,16 @@ class TablaApp {
         b.vy += rand(-14, -4);
       }
     });
+
+    // Warp calibration buttons
+    document.getElementById('bWarpCal').addEventListener('click', () => this._enterCalMode());
+    document.getElementById('warpBadge').addEventListener('click', () => this._enterCalMode());
+    document.getElementById('calApply').addEventListener('click',  () => this._applyCalibration());
+    document.getElementById('calReset').addEventListener('click',  () => this._resetCalCorners());
+    document.getElementById('calCancel').addEventListener('click', () => this._exitCalMode());
+
+    // Draggable calibration handles
+    this._setupCalDrag();
 
     // Start button
     document.getElementById('startBtn').addEventListener('click', () => this._startCamera());
@@ -567,6 +757,186 @@ class TablaApp {
   _resize() {
     this.canvas.width  = window.innerWidth;
     this.canvas.height = window.innerHeight;
+  }
+
+  // ── Perspective Calibration ──────────────────────────────────────────────────
+
+  // Default handle positions: slightly inset from the screen corners so they
+  // are clearly visible and draggable.
+  _defaultCalCorners() {
+    const W = this.canvas.width, H = this.canvas.height;
+    const ix = W * 0.05, iy = H * 0.05;
+    return [
+      { x: ix,     y: iy     }, // TL
+      { x: W - ix, y: iy     }, // TR
+      { x: W - ix, y: H - iy }, // BR
+      { x: ix,     y: H - iy }  // BL
+    ];
+  }
+
+  _resetCalCorners() {
+    this._calPts = this._defaultCalCorners();
+    this._updateCalHandles();
+  }
+
+  _updateCalHandles() {
+    [0, 1, 2, 3].forEach(i => {
+      const el = document.getElementById(`ch${i}`);
+      el.style.left = `${this._calPts[i].x}px`;
+      el.style.top  = `${this._calPts[i].y}px`;
+    });
+  }
+
+  _enterCalMode() {
+    // If a warp is already active, restore its corners so the user sees them
+    if (this.warper.active && this.warper.screenCorners) {
+      this._calPts = this.warper.screenCorners.map(p => ({ ...p }));
+    } else if (!this._calPts) {
+      this._calPts = this._defaultCalCorners();
+    }
+    this._updateCalHandles();
+    document.getElementById('calOverlay').style.display = 'block';
+    this._runCalLoop();
+  }
+
+  _exitCalMode() {
+    cancelAnimationFrame(this._calAnimId);
+    this._calAnimId = null;
+    document.getElementById('calOverlay').style.display = 'none';
+  }
+
+  _applyCalibration() {
+    const iw = this.video.videoWidth, ih = this.video.videoHeight;
+    if (!iw || !ih) { this._exitCalMode(); return; }
+    this.warper.calibrate(this._calPts, this.canvas.width, this.canvas.height, iw, ih);
+    document.getElementById('warpBadge').style.display = 'block';
+    document.getElementById('bWarpCal').classList.add('on');
+    this._exitCalMode();
+  }
+
+  // Live loop that draws the webcam feed + calibration quad into the cal canvas
+  _runCalLoop() {
+    const calCv  = document.getElementById('calCanvas');
+    const calCtx = calCv.getContext('2d');
+    const draw = () => {
+      if (document.getElementById('calOverlay').style.display === 'none') return;
+      const W = window.innerWidth, H = window.innerHeight;
+      calCv.width  = W;
+      calCv.height = H;
+      calCtx.clearRect(0, 0, W, H);
+      calCtx.drawImage(this.video, 0, 0, W, H);
+
+      // Draw quad outline between handles
+      const pts = this._calPts;
+      calCtx.beginPath();
+      calCtx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < 4; i++) calCtx.lineTo(pts[i].x, pts[i].y);
+      calCtx.closePath();
+      calCtx.strokeStyle = 'rgba(255,210,0,.9)';
+      calCtx.lineWidth   = 2;
+      calCtx.setLineDash([10, 5]);
+      calCtx.stroke();
+      calCtx.setLineDash([]);
+
+      // Semi-transparent fill to show selected region
+      calCtx.beginPath();
+      calCtx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < 4; i++) calCtx.lineTo(pts[i].x, pts[i].y);
+      calCtx.closePath();
+      calCtx.fillStyle = 'rgba(255,210,0,.08)';
+      calCtx.fill();
+
+      this._calAnimId = requestAnimationFrame(draw);
+    };
+    draw();
+  }
+
+  // Wire up mouse / touch drag for the 4 calibration handles
+  _setupCalDrag() {
+    const handles = [0, 1, 2, 3].map(i => document.getElementById(`ch${i}`));
+    let dragIdx = -1;
+    const overlay = document.getElementById('calOverlay');
+
+    const startDrag = (i, e) => {
+      dragIdx = i;
+      handles[i].classList.add('dragging');
+      e.preventDefault();
+      e.stopPropagation();
+    };
+
+    const moveDrag = (clientX, clientY) => {
+      if (dragIdx < 0) return;
+      const rect = overlay.getBoundingClientRect();
+      // Use window dimensions for the upper clamp bound — calPts live in
+      // viewport (screen) space, same as clientX/clientY.
+      this._calPts[dragIdx].x = clamp(clientX - rect.left, 0, window.innerWidth);
+      this._calPts[dragIdx].y = clamp(clientY - rect.top,  0, window.innerHeight);
+      this._updateCalHandles();
+    };
+
+    const endDrag = () => {
+      if (dragIdx >= 0) handles[dragIdx].classList.remove('dragging');
+      dragIdx = -1;
+    };
+
+    handles.forEach((el, i) => {
+      el.addEventListener('mousedown',  e => startDrag(i, e));
+      el.addEventListener('touchstart', e => startDrag(i, e), { passive: false });
+    });
+
+    overlay.addEventListener('mousemove',  e => moveDrag(e.clientX, e.clientY));
+    overlay.addEventListener('touchmove',  e => {
+      moveDrag(e.touches[0].clientX, e.touches[0].clientY);
+      e.preventDefault();
+    }, { passive: false });
+
+    document.addEventListener('mouseup',  endDrag);
+    document.addEventListener('touchend', endDrag);
+  }
+
+  // ── Image-coordinate mapper (canvas → image pixel) ──────────────────────────
+  // Returns the image-space {x, y} that corresponds to canvas point (cx, cy).
+  _imgCoord(cx, cy, sx, sy) {
+    return this.warper.active
+      ? this.warper.transform(cx, cy)
+      : { x: cx * sx, y: cy * sy };
+  }
+
+  // Sample a grid of points to estimate what % of the canvas is detected as
+  // obstacle — useful for diagnosing threshold / calibration issues.
+  _sampleObstaclePercent(imgData, sx, sy) {
+    const { data, width: iw, height: ih } = imgData;
+    const W = this.canvas.width, H = this.canvas.height;
+    const GRID = 12;
+    let hits = 0;
+    for (let i = 0; i < GRID; i++) {
+      for (let j = 0; j < GRID; j++) {
+        const cx = (i + 0.5) / GRID * W, cy = (j + 0.5) / GRID * H;
+        const ic = this._imgCoord(cx, cy, sx, sy);
+        if (this.vis.isObstacle(data, iw, ih, ic.x, ic.y)) hits++;
+      }
+    }
+    return ((hits / (GRID * GRID)) * 100) | 0;
+  }
+
+  // Draw the debug stats bar at the bottom of the canvas
+  _drawDebugOverlay(ctx, W, H) {
+    const mode = this.vis.hasCalib()
+      ? 'bg-sub'
+      : (this.warper.active ? 'warp+thr' : 'threshold');
+    const warpInfo  = this.warper.active ? '  WARP:ON' : '';
+    const statsText =
+      `DEBUG  MODE:${mode}  THR:${this.vis.threshold}` +
+      `  OBS:${this._obsPercent}%  HITS:${this._hitCount}/${this.balls.length}${warpInfo}`;
+
+    ctx.fillStyle = 'rgba(0,0,0,.65)';
+    ctx.fillRect(0, H - 26, W, 26);
+    ctx.fillStyle = '#a0a0f8';
+    ctx.font      = '12px "Courier New", monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(statsText, 12, H - 13);
+    ctx.textBaseline = 'alphabetic';
   }
 
   _spawnAt(cx, cy) {
@@ -637,17 +1007,6 @@ class TablaApp {
     const ctx = this.ctx;
     ctx.clearRect(0, 0, W, H);
 
-    // FPS
-    this._frameAcc++;
-    const nowMs = performance.now();
-    if (nowMs - this._fpsTimer >= 500) {
-      this._fps = Math.round(this._frameAcc * 1000 / (nowMs - this._fpsTimer));
-      document.getElementById('fps').textContent =
-        `FPS: ${this._fps} &nbsp;|&nbsp; Balls: ${this.balls.length}`;
-      this._frameAcc = 0;
-      this._fpsTimer = nowMs;
-    }
-
     const imgData = this._captureFrame();
     this._lastImgData = imgData;
 
@@ -662,13 +1021,29 @@ class TablaApp {
     }
 
     const iw = imgData.width, ih = imgData.height;
-    const sx = iw / W, sy = ih / H; // canvas → image scale
+    const sx = iw / W, sy = ih / H; // canvas → image scale (linear fallback)
 
     // ── Background (webcam or vision mask) ──
     if (this.showVis) {
       this._drawVisionOverlay(imgData, W, H);
     } else {
       ctx.drawImage(this.off, 0, 0, W, H);
+    }
+
+    // Draw warp quad outline on main canvas so users can see calibration area
+    if (this.warper.active && this.warper.screenCorners) {
+      const pts = this.warper.screenCorners;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < 4; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.closePath();
+      ctx.strokeStyle = 'rgba(76,175,80,.5)';
+      ctx.lineWidth   = 1.5;
+      ctx.setLineDash([8, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
     }
 
     // Semi-transparent overlay for contrast
@@ -682,14 +1057,43 @@ class TablaApp {
     }
 
     // ── Physics ──
+    // Build image-coordinate function (uses warp or linear scale)
+    const imgCoordFn = (cx, cy) => this._imgCoord(cx, cy, sx, sy);
+
     this.balls = this.balls.filter(b => !b.dead);
+    this._hitCount = 0;
     for (const b of this.balls) {
-      b.update(this.gravity, this.vis, imgData, sx, sy, W, H, this.audio);
+      b.update(this.gravity, this.vis, imgData, imgCoordFn, sx, sy, W, H, this.audio, this.debugMode);
+      if (b._isHitting) this._hitCount++;
     }
     resolveBallCollisions(this.balls);
 
     // ── Render Balls ──
-    for (const b of this.balls) b.draw(ctx);
+    for (const b of this.balls) {
+      b.draw(ctx, this.debugMode ? b._debugPts : null);
+    }
+
+    // ── Debug stats overlay ──
+    if (this.debugMode) {
+      this._obsTimer--;
+      if (this._obsTimer <= 0) {
+        this._obsTimer   = 30; // resample every 30 frames
+        this._obsPercent = this._sampleObstaclePercent(imgData, sx, sy);
+      }
+      this._drawDebugOverlay(ctx, W, H);
+    }
+
+    // ── FPS counter ──
+    this._frameAcc++;
+    const nowMs = performance.now();
+    if (nowMs - this._fpsTimer >= 500) {
+      this._fps = Math.round(this._frameAcc * 1000 / (nowMs - this._fpsTimer));
+      document.getElementById('fps').textContent =
+        `FPS: ${this._fps} \u00a0|\u00a0 Balls: ${this.balls.length}` +
+        (this.debugMode ? ` \u00a0|\u00a0 Hits: ${this._hitCount}` : '');
+      this._frameAcc = 0;
+      this._fpsTimer = nowMs;
+    }
   }
 }
 
